@@ -1,168 +1,162 @@
-# Enterprise Text-to-SQL Engine (Spider 2.0 Benchmark Architecture)
+# Text-to-SQL Problem 1: Erroneous Data Analysis Using MCP and PostgreSQL
 
-An open-source, zero-cost Enterprise Text-to-SQL system built from scratch using a strict problem-by-problem engineering methodology addressing the primary real-world failure modes identified in the **Spider 2.0 benchmark**:
-1. **Erroneous Data Analysis (35.5% of errors)**: Multi-stage reasoning failures, complex window functions, division-by-zero, and dialect function syntax misuse.
-2. **Wrong Schema Linking (27.6% of errors)**: 700+ column context window overflows, entity literal mismatches, and nested data structures (`STRUCT`, `ARRAY`, `JSON`).
+An enterprise-grade Text-to-SQL system built from scratch using the **Model Context Protocol (MCP)** and **PostgreSQL**, dedicated exclusively to solving **Problem 1: Erroneous Data Analysis**.
 
 ---
 
-## 1. Zero-Cost Open-Source Stack
+## 1. Problem 1 Overview: Erroneous Data Analysis
 
-- **Agent Orchestration**: LangGraph (v0.2+) & LangChain (v0.3+)
-- **Embeddings**: `langchain-huggingface` (`BAAI/bge-small-en-v1.5` running locally on CPU/GPU)
-- **Vector Store**: Chroma DB (in-memory & persistent `./chroma_db`)
-- **LLM / SQL Coder**: `Qwen/Qwen2.5-Coder-32B-Instruct` (via local Ollama `qwen2.5-coder:7b`, Hugging Face API, or built-in deterministic AST synthesizer for zero-cost offline validation)
-- **SQL Parsing & AST Transpilation**: SQLGlot
-- **Local Database Engine**: DuckDB / SQLite
-- **Data Validation**: Pydantic v2
+In the Spider 2.0 benchmark, **35.5% of real-world text-to-SQL failures** stem from *Erroneous Data Analysis*.
+
+### Core Concept: Execution Success != Semantic Correctness
+A query can be syntactically valid in PostgreSQL and execute with zero errors (`HTTP 200 / Status SUCCESS`), yet produce a completely incorrect business answer due to:
+1. **Grain & Counting Mismatches**: Counting row/event occurrences (`COUNT(*)`, `COUNT(event_id)`) instead of distinct entities (`COUNT(DISTINCT user_id)`).
+2. **Filter Misplacement**: Placing date predicates on a `LEFT JOIN` in the `WHERE` clause, inadvertently turning it into an `INNER JOIN` and dropping the churned cohort.
+3. **Denominator Distortion**: Dividing returning users by active users or activity events instead of the baseline signup cohort.
+4. **Division-by-Zero Crashes**: Dividing without guarding the denominator with `NULLIF(col, 0)`.
 
 ---
 
-## 2. Repository Structure
+## 2. Architecture
 
 ```
-text2sql_engine/
-├── core/
-│   ├── __init__.py
-│   ├── config.py             # HuggingFace & ChromaDB initializations, LLM backend provider
-│   └── state.py              # LangGraph SQLAgentState definition
-├── modules/
-│   ├── __init__.py
-│   ├── problem1_planner/     # Problem 1: CTE Logic Planner & Dialect Function RAG
-│   │   ├── __init__.py
-│   │   ├── schemas.py        # Pydantic schemas (DialectFunctionSpec, CTEPlanStep, LogicPlan)
-│   │   └── logic_planner.py  # LogicPlanner, DialectFunctionRAG, SQLGlot compiler
-│   └── problem2_retriever/   # Problem 2: Two-Stage Schema Retriever & Nested Flattener
-│       ├── __init__.py
-│       ├── schema_flattener.py  # Recursive STRUCT / ARRAY / JSON dot-notation flattener
-│       └── vector_retriever.py  # Two-Stage Retriever (Coarse Table + Fine Field) & Value Indexer
+User Question ("What % of Jan signups returned in Feb?")
+         │
+         ▼
+┌────────────────────────┐
+│    SQL Generator       │  Decomposes question into AnalyticalContract
+└────────┬───────────────┘
+         │  Requests schema cards & sample rows via JSON-RPC
+         ▼
+┌────────────────────────┐
+│   MCP Query Executor   │  Official Python MCP Client layer
+└────────┬───────────────┘
+         │
+         ▼
+┌────────────────────────┐
+│       MCP Server       │  Exposes 5 safe tools:
+│   (MCPServer v2.3)     │  1. list_tables
+└────────┬───────────────┘  2. get_table_schema
+         │                  3. get_sample_rows
+         │                  4. validate_sql (AST inspection)
+         │                  5. execute_readonly_sql (timeout + row limits)
+         ▼
+┌────────────────────────┐
+│  PostgreSQL / Local DB │  Enforces read-only transactions & 60s statement timeout
+└────────┬───────────────┘
+         │
+         ▼
+┌────────────────────────┐
+│   Semantic Validator   │  AST inspection:
+│   (AST + Result check) │  - Enforces COUNT(DISTINCT entity)
+└────────┬───────────────┘  - Detects LEFT JOIN filter leaks
+         │                  - Verifies plausibility bounds (0% <= rate <= 100%)
+         ▼
+Verified Business Answer (30.0% Retention Rate)
+```
+
+---
+
+## 3. Project Structure
+
+```
+text_to_sql/
+├── src/
+│   ├── __init__.py            # Package root (version 0.1.0)
+│   ├── config.py              # Pydantic Settings with masked credentials and .env loading
+│   ├── db.py                  # PostgreSQL connection factory with 60s timeout & read-only session
+│   ├── schema_inspector.py    # Generates LLM schema cards and fetches bounded sample rows
+│   ├── sql_validator.py       # SQLGlot AST validator rejecting DDL, DML, and multi-statements
+│   ├── mcp_server.py          # Official Anthropic MCP Server with 5 database tools
+│   ├── query_executor.py      # MCP Client layer wrapping tool discovery and invocation
+│   ├── semantic_validator.py  # Diagnoses business logic pitfalls (grain, join traps, bounds)
+│   ├── sql_generator.py       # Generates baseline (naive) and improved (guarded) SQL
+│   └── evaluator.py           # Calculates dynamic ground truth and compares pipeline accuracy
+├── scripts/
+│   ├── inspect_database.py    # CLI tool to inspect tables and columns in PostgreSQL
+│   ├── seed_test_data.py      # Populates the 120-user January/February retention benchmark
+│   └── run_demo.py            # End-to-end demonstration comparing Baseline vs Improved
 ├── tests/
 │   ├── __init__.py
-│   ├── test_problem1.py      # Unit tests for CTE planner, Dialect RAG, AST compilation
-│   └── test_problem2.py      # Unit tests for schema flattener, value indexer, DuckDB execution
-├── data/
-│   ├── setup_sample_db.py    # DuckDB generator with relational and nested STRUCT/ARRAY tables
-│   └── warehouse.duckdb      # DuckDB database file
-└── main.py                   # LangGraph StateGraph pipeline orchestrator
+│   ├── test_db_connection.py  # Tests live PostgreSQL connectivity and session settings
+│   ├── test_mcp_tools.py      # Tests discovery and execution of all 5 MCP tools
+│   ├── test_sql_validator.py  # Tests AST rejection of DROP, DELETE, UPDATE, and multi-statements
+│   └── test_semantic_analysis.py # Tests retention accuracy, grain handling, and join leak detection
+├── .env.example               # Sanitized template with configuration placeholders
+├── .gitignore                 # Excludes .env, __pycache__, local databases, and logs
+├── requirements.txt           # Minimal dependencies (mcp, psycopg2-binary, sqlglot, pydantic, pytest)
+└── README.md                  # Project documentation and architectural guide
 ```
 
 ---
 
-## 3. Problem 1: Solving Erroneous Data Analysis (35.5% of Errors)
+## 4. Setup and Installation
 
-### The Failure Mode
-Standard text-to-SQL models generate monolithic queries that collapse when handling:
-- Multi-stage cohort aggregations
-- Complex window functions (`ROW_NUMBER`, `DENSE_RANK`, `LEAD`, `LAG`)
-- Dialect function misuses (e.g. BigQuery `DATE_DIFF(end, start, DAY)` vs Snowflake `DATEDIFF(day, start, end)` vs DuckDB `date_diff('day', start, end)`)
-- Division-by-zero crashes when computing ratios and percentages
+### 4.1 Prerequisites
+- Python 3.10+ (Tested on Python 3.13)
+- Access to PostgreSQL or local test SQLite database
 
-### The Solution (`modules/problem1_planner/`)
-1. **Pydantic Contract Planning (`schemas.py`)**:
-   Deconstructs analytical intent into an explicit Directed Acyclic Graph (DAG) of Common Table Expressions (`CTEPlanStep`), each with clear inputs, outputs, math logic, and filter clauses before any SQL is written.
-2. **Dialect Function RAG (`logic_planner.py`)**:
-   A curated knowledge catalog indexing dialect-specific syntax rules for DuckDB, BigQuery, Snowflake, and PostgreSQL. Automatically injects verified function patterns into the prompt.
-3. **Safe Math & AST Compilation**:
-   Guards all divisions with `NULLIF(col, 0)`. Validates AST and transpiles queries across dialects using SQLGlot.
-
----
-
-## 4. Problem 2: Solving Wrong Schema Linking (27.6% of Errors)
-
-### The Failure Mode
-Enterprise databases contain dozens of tables and 700+ columns. Models suffer from:
-- Context window overflow and hallucinated column names
-- Inability to reference nested `STRUCT`, `ARRAY`, and `JSON` fields (e.g. GA4 `event_params`)
-- Mismatched filter literals (user queries "purchases in California", database stores `state_code = 'CA'`)
-
-### The Solution (`modules/problem2_retriever/`)
-1. **Schema Flattener (`schema_flattener.py`)**:
-   Recursively parses nested `STRUCT(...)` and `ARRAY(STRUCT(...))` definitions into dot paths (e.g., `event_params.key`, `event_params.value.string_value`, `geo_info.city`) and marks whether `UNNEST` is required.
-2. **Two-Stage Schema Retriever (`vector_retriever.py`)**:
-   - **Stage 1 (Coarse Table Filter)**: Prunes 700+ column schemas down to the top 3–5 candidate tables using `BAAI/bge-small-en-v1.5` embeddings.
-   - **Stage 2 (Fine-Grained Field Selection)**: Pulls only relevant columns and nested paths, producing compact schema cards.
-3. **Distinct Value Indexer (`vector_retriever.py`)**:
-   Indexes sample categorical cell literals (e.g. `("CA", "California")`, `("COMPLETED", "Completed")`), automatically mapping natural language entities directly to database filter predicates (`state_code = 'CA'`).
-
----
-
-## 5. Environment Setup & Configuration
-
-### 5.1 Create Virtual Environment & Install Dependencies
+### 4.2 Install Dependencies
 ```bash
-python -m venv .venv
-# On Windows:
-.venv\Scripts\activate
-# On Linux/macOS:
-# source .venv/bin/activate
-
 pip install -r requirements.txt
 ```
 
-### 5.2 Configure Environment Variables
-Copy `.env.example` to `.env`:
+### 4.3 Configure Environment Variables
+Copy `.env.example` to `.env` and fill in your PostgreSQL credentials:
 ```bash
 cp .env.example .env
 ```
-
-### 5.3 LLM Backend Options & Hardware Considerations
-The engine supports 4 configurable LLM backend modes via `TEXT2SQL_LLM_BACKEND`:
-
-1. **Deterministic Test Mock (`TEXT2SQL_LLM_BACKEND=mock`)**:
-   - Zero-cost, 100% offline, requires no external services or GPU resources.
-   - Generates realistic, schema-valid `LogicPlan` objects for unit testing and offline pipeline execution.
-2. **Local Ollama with Qwen Coder (`TEXT2SQL_LLM_BACKEND=ollama`)**:
-   - Install [Ollama](https://ollama.ai) and pull the model:
-     ```bash
-     ollama pull qwen2.5-coder:7b
-     ```
-   - Hardware requirements:
-     - `qwen2.5-coder:7b`: ~8GB VRAM (or 16GB system RAM on CPU). Recommended for local laptops.
-     - `Qwen2.5-Coder-32B-Instruct`: ~20-24GB VRAM (e.g. RTX 3090/4090 or Apple Silicon M2/M3 with 36GB+ Unified Memory).
-3. **Hugging Face Hub API (`TEXT2SQL_LLM_BACKEND=huggingface`)**:
-   - Set `TEXT2SQL_HF_API_TOKEN=your_token` in `.env` (or via `HF_TOKEN` environment variable).
-4. **Auto-Resolution (`TEXT2SQL_LLM_BACKEND=auto`)**:
-   - Automatically probes local Ollama, falls back to HuggingFace if token exists, and uses the test mock in development mode. In production (`TEXT2SQL_ENV=production`), fails closed if no real model is reachable.
+Example `.env`:
+```ini
+TEXT2SQL_POSTGRES_HOST=35.200.180.162
+TEXT2SQL_POSTGRES_PORT=5432
+TEXT2SQL_POSTGRES_USER=t2sql_reader
+TEXT2SQL_POSTGRES_PASSWORD=your_password_here
+TEXT2SQL_POSTGRES_DB=lending_sample
+TEXT2SQL_POSTGRES_SSLMODE=require
+TEXT2SQL_POSTGRES_SCHEMA=public
+```
 
 ---
 
-## 6. Running the Test Suite & Pipeline
+## 5. Execution Commands
 
-### Run Full Test Suite (Offline, Zero-Cost)
+### 1. Inspect the Live PostgreSQL Database
 ```bash
-python -m pytest text2sql_engine/tests -v
+python scripts/inspect_database.py
 ```
+Outputs discovered tables (`group_loans`, `individual_loans`, `outlets`, `staff`, etc.), column types, nullability, and row counts.
 
-### Run Problem 1 Specific Tests (Including Cohort Retention Integration Test)
+### 2. Seed the Problem 1 Benchmark Test Dataset
 ```bash
-python -m pytest text2sql_engine/tests/test_problem1.py -v
+python scripts/seed_test_data.py
 ```
+Creates `local_problem1.db` containing:
+- 100 January 2024 sign-ups (Cohort denominator).
+- 30 distinct January users returning in February (Cohort numerator).
+- 134 February activity events (repeat logins, testing grain mismatch).
+- Known mathematical ground truth: **30.0%**.
 
-### Run Pipeline End-to-End Orchestrator
+### 3. Run the End-to-End Baseline vs. Improved Demo
 ```bash
-python main.py
+python scripts/run_demo.py
 ```
 
-### Sample Output
+### 4. Run the Automated Test Suite
+```bash
+python -m pytest tests/ -v
 ```
---- [Query 1] 'Find the top 3 customers ranked by total spend with safe division handling' (Target Dialect: DUCKDB) ---
-[Candidate Tables Selected]: ['customers', 'orders', 'order_items']
-[Discovered Database Literals]: {}
+Runs 25 automated tests verifying connectivity, MCP tools, SQL AST security, and semantic analysis accuracy.
 
-[Compiled & Transpiled SQL]:
-WITH customer_spend AS (
-  SELECT
-    orders.customer_id,
-    SUM(orders.total_amount) AS total_spent,
-    ROUND(SUM(orders.shipping_cost) * 1.0 / NULLIF(SUM(orders.total_amount), 0), 4) AS shipping_ratio
-  FROM orders
-  GROUP BY
-    orders.customer_id
-)
-SELECT customer_id, total_spent, shipping_ratio FROM customer_spend ORDER BY total_spent DESC LIMIT 3
+---
 
-[Execution Result (3 rows)]:
-  {'customer_id': 'C005', 'total_spent': 510.0, 'shipping_ratio': 0.049}
-  {'customer_id': 'C001', 'total_spent': 430.0, 'shipping_ratio': 0.0581}
-  {'customer_id': 'C002', 'total_spent': 420.0, 'shipping_ratio': 0.0476}
-```
+## 6. Demonstration Summary: Baseline vs. Improved
+
+| Dimension | Pipeline A (Naive Baseline) | Pipeline B (Improved MCP + Semantic) |
+| :--- | :--- | :--- |
+| **Generated SQL** | `COUNT(e.event_id) * 100.0 / COUNT(u.user_id)` | `(COUNT(DISTINCT CASE WHEN e.event_date ... THEN u.user_id END) * 100.0) / NULLIF(COUNT(DISTINCT u.user_id), 0)` |
+| **SQL Execution** | SUCCESS (0 errors) | SUCCESS (0 errors) |
+| **Returned Result** | **100.0%** | **30.0%** |
+| **Ground Truth** | **30.0%** | **30.0%** |
+| **Absolute Error** | **70.00%** (Failure) | **0.00%** (Exact Match) |
+| **Semantic Check** | FAILED (Grain Mismatch, Filter Leak) | PASSED (Semantically Sound) |

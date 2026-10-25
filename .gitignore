@@ -42,6 +42,9 @@ htmlcov/
 # Database and vector storage runtime artifacts
 *.duckdb
 *.duckdb.wal
+*.db
+*.sqlite
+*.sqlite3
 chroma_storage/
 .chroma/
 
