@@ -258,6 +258,104 @@ class SchemaFlattener:
         return flattened
 
     @classmethod
+    def flatten_postgres_table(
+        cls,
+        con: Any,
+        table_name: str,
+        schema_name: str = "public",
+    ) -> List[FlattenedField]:
+        """Inspects and flattens columns for a PostgreSQL table, including ARRAY, JSON, and JSONB."""
+        query = """
+        SELECT
+            c.column_name,
+            c.data_type,
+            c.udt_name,
+            d.description AS column_comment
+        FROM information_schema.columns c
+        LEFT JOIN pg_class cl ON cl.relname = c.table_name
+        LEFT JOIN pg_namespace ns ON ns.oid = cl.relnamespace AND ns.nspname = c.table_schema
+        LEFT JOIN pg_description d ON d.objoid = cl.oid AND d.objsubid = c.ordinal_position
+        WHERE c.table_name = %s
+          AND c.table_schema = %s
+        ORDER BY c.ordinal_position;
+        """
+        flattened: List[FlattenedField] = []
+        try:
+            with con.cursor() as cur:
+                cur.execute(query, (table_name, schema_name))
+                rows = cur.fetchall()
+        except Exception:
+            fallback_query = """
+            SELECT column_name, data_type, udt_name, NULL AS column_comment
+            FROM information_schema.columns
+            WHERE table_name = %s
+              AND table_schema = %s
+            ORDER BY ordinal_position;
+            """
+            try:
+                con.rollback()
+            except Exception:
+                pass
+            with con.cursor() as cur:
+                cur.execute(fallback_query, (table_name, schema_name))
+                rows = cur.fetchall()
+
+        for row in rows:
+            if not row or len(row) < 2:
+                continue
+            col_name = str(row[0])
+            data_type = str(row[1]).upper()
+            udt_name = str(row[2]) if len(row) > 2 else data_type.lower()
+            comment = str(row[3]) if len(row) > 3 and row[3] else None
+
+            if data_type == "ARRAY" or udt_name.startswith("_"):
+                elem_type = udt_name.lstrip("_").upper()
+                type_str = f"ARRAY<{elem_type}>"
+                flattened.append(
+                    FlattenedField(
+                        table_name=table_name,
+                        root_column=col_name,
+                        path=col_name,
+                        data_type=type_str,
+                        is_nested=True,
+                        is_array=True,
+                        parent_array_path=col_name,
+                        unnest_syntax=f"UNNEST({col_name})",
+                        comment=comment,
+                    )
+                )
+            elif data_type in ("JSON", "JSONB"):
+                flattened.append(
+                    FlattenedField(
+                        table_name=table_name,
+                        root_column=col_name,
+                        path=col_name,
+                        data_type=data_type,
+                        is_nested=True,
+                        is_array=False,
+                        parent_array_path=None,
+                        unnest_syntax=None,
+                        comment=comment or f"{data_type} document field",
+                    )
+                )
+            else:
+                flattened.append(
+                    FlattenedField(
+                        table_name=table_name,
+                        root_column=col_name,
+                        path=col_name,
+                        data_type=data_type,
+                        is_nested=False,
+                        is_array=False,
+                        parent_array_path=None,
+                        unnest_syntax=None,
+                        comment=comment,
+                    )
+                )
+
+        return flattened
+
+    @classmethod
     def generate_schema_card(cls, table_name: str, fields: List[FlattenedField], description: str = "") -> str:
         """Generates an LLM-friendly schema card with dot paths and nested hints."""
         lines = [f"Table: {table_name}"]

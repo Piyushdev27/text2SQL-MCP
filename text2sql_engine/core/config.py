@@ -75,11 +75,29 @@ class EngineSettings(BaseSettings):
         description="Optional Hugging Face Hub token (never logged)",
     )
 
+    # Database Backend Selection: 'duckdb' or 'postgres'
+    db_backend: str = Field(
+        default="duckdb",
+        description="Active database backend ('duckdb' or 'postgres')",
+    )
+
     # Local Database Engine
     duckdb_path: str = Field(
         default="./data/warehouse.duckdb",
         description="Path to DuckDB database file",
     )
+
+    # PostgreSQL Connection Configuration
+    postgres_uri: Optional[str] = Field(
+        default=None,
+        description="PostgreSQL connection URI (e.g. postgresql://user:pass@localhost:5432/dbname)",
+    )
+    postgres_host: str = Field(default="localhost", description="PostgreSQL host")
+    postgres_port: int = Field(default=5432, description="PostgreSQL port")
+    postgres_user: Optional[str] = Field(default="postgres", description="PostgreSQL user")
+    postgres_password: Optional[str] = Field(default=None, description="PostgreSQL password")
+    postgres_db: Optional[str] = Field(default=None, description="PostgreSQL database name")
+    postgres_schema: str = Field(default="public", description="PostgreSQL schema name (default 'public')")
 
 
 _settings: Optional[EngineSettings] = None
@@ -111,6 +129,48 @@ def get_embeddings() -> HuggingFaceEmbeddings:
             encode_kwargs={"normalize_embeddings": True},
         )
     return _embeddings_instance
+
+
+def get_postgres_connection(
+    uri: Optional[str] = None,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    user: Optional[str] = None,
+    password: Optional[str] = None,
+    database: Optional[str] = None,
+) -> Any:
+    """Initializes and returns a live connection to PostgreSQL."""
+    try:
+        import psycopg2
+    except ImportError as e:
+        raise ConfigurationError(
+            "psycopg2 is required for PostgreSQL connections. Install it with: pip install psycopg2-binary"
+        ) from e
+
+    settings = get_settings()
+    conn_uri = uri or settings.postgres_uri
+
+    if conn_uri:
+        return psycopg2.connect(conn_uri)
+
+    target_host = host or settings.postgres_host
+    target_port = port or settings.postgres_port
+    target_user = user or settings.postgres_user
+    target_pass = password or settings.postgres_password
+    target_db = database or settings.postgres_db
+
+    conn_kwargs: Dict[str, Any] = {
+        "host": target_host,
+        "port": target_port,
+    }
+    if target_user:
+        conn_kwargs["user"] = target_user
+    if target_pass:
+        conn_kwargs["password"] = target_pass
+    if target_db:
+        conn_kwargs["dbname"] = target_db
+
+    return psycopg2.connect(**conn_kwargs)
 
 
 def get_chroma_client(persist_directory: Optional[str] = None, in_memory: bool = False) -> chromadb.ClientAPI:

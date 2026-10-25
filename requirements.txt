@@ -7,6 +7,7 @@ sqlglot>=26.0.0
 
 # Database Engine
 duckdb>=1.0.0
+psycopg2-binary>=2.9.0
 
 # Orchestration & Graph Engine
 langchain>=0.3.0

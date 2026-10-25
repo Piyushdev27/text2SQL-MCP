@@ -17,6 +17,7 @@ from text2sql_engine.modules.problem2_retriever.vector_retriever import (
     TwoStageSchemaRetriever,
 )
 from text2sql_engine.data.setup_sample_db import init_sample_database
+from text2sql_engine.data.postgres_connector import PostgresConnector
 
 
 class Text2SQLPipeline:
@@ -25,17 +26,33 @@ class Text2SQLPipeline:
     def __init__(
         self,
         db_path: Optional[str] = None,
+        db_backend: Optional[str] = None,
+        postgres_uri: Optional[str] = None,
+        postgres_schema: Optional[str] = None,
+        postgres_con: Optional[Any] = None,
         retriever: Optional[TwoStageSchemaRetriever] = None,
         planner: Optional[LogicPlanner] = None,
     ):
         settings = get_settings()
+        self.db_backend = (db_backend or settings.db_backend).lower()
         self.db_path = db_path or settings.duckdb_path
+        self.postgres_schema = postgres_schema or settings.postgres_schema
+        self.postgres_uri = postgres_uri or settings.postgres_uri
+        self.pg_connector: Optional[PostgresConnector] = None
+        self.con = None
 
-        # Ensure database exists
-        if not os.path.exists(self.db_path):
-            self.con = init_sample_database(self.db_path)
+        if self.db_backend == "postgres":
+            self.pg_connector = PostgresConnector(
+                connection=postgres_con,
+                uri=self.postgres_uri,
+                schema_name=self.postgres_schema,
+            )
         else:
-            self.con = duckdb.connect(self.db_path)
+            # Default to DuckDB
+            if not os.path.exists(self.db_path):
+                self.con = init_sample_database(self.db_path)
+            else:
+                self.con = duckdb.connect(self.db_path)
 
         # Initialize Retriever & Planner
         import chromadb
@@ -53,7 +70,12 @@ class Text2SQLPipeline:
         self.graph = self._build_graph()
 
     def _bootstrap_schema_index(self) -> None:
-        """Indexes sample database tables, nested types, and distinct categorical values."""
+        """Indexes database tables, nested types, and distinct categorical values into vector store."""
+        if self.db_backend == "postgres" and self.pg_connector:
+            tables_meta, sample_values = self.pg_connector.inspect_database_schema()
+            self.retriever.index_database_schema(tables_meta, sample_values, clear_existing=True)
+            return
+
         tables = [t[0] for t in self.con.execute("SHOW TABLES;").fetchall()]
         tables_meta: Dict[str, Dict[str, Any]] = {}
 
@@ -188,8 +210,27 @@ class Text2SQLPipeline:
         sql = state.get("generated_sql", "")
         dialect = state.get("target_dialect", "duckdb").lower().strip()
 
+        # PostgreSQL live execution
+        if (self.db_backend == "postgres" and self.pg_connector) or (dialect in ("postgres", "postgresql") and self.pg_connector):
+            try:
+                results = self.pg_connector.execute_query(sql)
+                return {
+                    "execution_status": "EXECUTED",
+                    "execution_result": results,
+                    "failed_stage": None,
+                    "error": None,
+                }
+            except Exception as e:
+                return {
+                    "execution_status": "ERROR",
+                    "execution_result": None,
+                    "failed_stage": "execution",
+                    "error_category": "runtime",
+                    "error": str(e),
+                }
+
         # DuckDB engine: local execution supported
-        if dialect == "duckdb":
+        if dialect == "duckdb" and self.con is not None:
             try:
                 cursor = self.con.execute(sql)
                 cols = [desc[0] for desc in cursor.description]
@@ -210,7 +251,7 @@ class Text2SQLPipeline:
                     "error": str(e),
                 }
         else:
-            # For non-DuckDB dialects (BigQuery, Snowflake, PostgreSQL), direct live execution is unsupported
+            # For non-supported dialects without live connection, direct execution is unsupported
             return {
                 "execution_status": "UNSUPPORTED_EXECUTION_BACKEND",
                 "execution_result": None,
@@ -323,8 +364,10 @@ class Text2SQLPipeline:
 
         return builder.compile()
 
-    def run(self, user_query: str, target_dialect: str = "duckdb", max_retries: int = 2) -> SQLAgentState:
+    def run(self, user_query: str, target_dialect: Optional[str] = None, max_retries: int = 2) -> SQLAgentState:
         """Executes the complete pipeline for a user query."""
+        if target_dialect is None:
+            target_dialect = "postgres" if self.db_backend == "postgres" else "duckdb"
         initial_state: SQLAgentState = {
             "user_query": user_query,
             "target_dialect": target_dialect,
@@ -336,15 +379,64 @@ class Text2SQLPipeline:
 
 
 def main():
-    """Demonstrates execution of the Enterprise Text-to-SQL pipeline on sample queries."""
+    """Demonstrates execution of the Enterprise Text-to-SQL pipeline on sample queries or live database."""
+    import argparse
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
+    parser = argparse.ArgumentParser(description="Enterprise Text-to-SQL Engine")
+    parser.add_argument("--backend", choices=["duckdb", "postgres"], default=None, help="Database backend")
+    parser.add_argument("--postgres", action="store_true", help="Use PostgreSQL backend")
+    parser.add_argument("--pg-uri", type=str, default=None, help="PostgreSQL connection URI")
+    parser.add_argument("--pg-schema", type=str, default=None, help="PostgreSQL schema name")
+    parser.add_argument("--query", type=str, default=None, help="Run a single natural language query")
+    parser.add_argument("--interactive", action="store_true", help="Interactive CLI query mode")
+    args = parser.parse_args()
+
+    backend = "postgres" if (args.postgres or args.backend == "postgres") else (args.backend or None)
+
     print("================================================================================")
-    print("[INFO] Initializing Enterprise Text-to-SQL Engine (Spider 2.0 Methodology)")
+    print(f"[INFO] Initializing Enterprise Text-to-SQL Engine (Backend: {(backend or get_settings().db_backend).upper()})")
     print("================================================================================")
 
-    pipeline = Text2SQLPipeline()
+    pipeline = Text2SQLPipeline(
+        db_backend=backend,
+        postgres_uri=args.pg_uri,
+        postgres_schema=args.pg_schema,
+    )
+
+    if args.query:
+        print(f"\n--- Query: '{args.query}' ---")
+        result = pipeline.run(args.query)
+        print(f"[Execution Status]: {result.get('execution_status')}")
+        if result.get("generated_sql"):
+            print("\n[Compiled SQL]:\n", result.get("generated_sql"))
+        if result.get("execution_result"):
+            print(f"\n[Execution Result ({len(result['execution_result'])} rows)]:")
+            for row in result["execution_result"][:10]:
+                print(" ", row)
+        elif result.get("error"):
+            print("\n[Error]:", result.get("error"))
+        return
+
+    if args.interactive:
+        print("\n[Interactive Mode]: Type your natural language question (or 'exit' to quit):")
+        while True:
+            try:
+                user_input = input("\nQuestion> ").strip()
+                if not user_input or user_input.lower() in ("exit", "quit"):
+                    break
+                res = pipeline.run(user_input)
+                print(f"[Status]: {res.get('execution_status')}")
+                if res.get("generated_sql"):
+                    print("[SQL]:", res.get("generated_sql"))
+                if res.get("execution_result"):
+                    print("[Results]:", res.get("execution_result"))
+                elif res.get("error"):
+                    print("[Error]:", res.get("error"))
+            except (KeyboardInterrupt, EOFError):
+                break
+        return
 
     sample_queries = [
         (
