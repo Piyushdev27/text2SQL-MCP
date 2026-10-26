@@ -72,6 +72,16 @@ class MCPQueryExecutor:
             raise MCPClientError(f"execute_readonly_sql failed: {result.content}")
         return result.structured_content["result"]
 
+    async def resolve_categorical_literals(self, user_query: str, target: str = "postgres") -> List[Dict[str, Any]]:
+        """Calls MCP tool 'resolve_categorical_literals'."""
+        result = await self.server.call_tool(
+            "resolve_categorical_literals",
+            {"user_query": user_query, "target": target},
+        )
+        if result.is_error:
+            raise MCPClientError(f"resolve_categorical_literals failed: {result.content}")
+        return result.structured_content["result"]
+
     # Synchronous convenience wrappers for ease of use in scripts and tests
     def list_tables_sync(self, target: str = "postgres") -> List[str]:
         return asyncio.run(self.list_tables(target=target))
@@ -87,3 +97,6 @@ class MCPQueryExecutor:
 
     def execute_readonly_sql_sync(self, sql: str, max_rows: int = 100, target: str = "postgres") -> Dict[str, Any]:
         return asyncio.run(self.execute_readonly_sql(sql=sql, max_rows=max_rows, target=target))
+
+    def resolve_categorical_literals_sync(self, user_query: str, target: str = "postgres") -> List[Dict[str, Any]]:
+        return asyncio.run(self.resolve_categorical_literals(user_query=user_query, target=target))

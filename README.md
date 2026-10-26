@@ -121,28 +121,34 @@ TEXT2SQL_POSTGRES_SCHEMA=public
 
 ## 5. Execution Commands
 
-### 1. Inspect the Live PostgreSQL Database
+### 1. Launch the Interactive Terminal Console (CLI Mode)
 ```bash
-python scripts/inspect_database.py
+python main.py
+```
+*(or `python main.py -i`)*
+Launches an interactive developer REPL with:
+- Natural Language Question evaluation.
+- Direct SQL execution sandbox with real-time AST safety validation.
+- Live PostgreSQL table exploration.
+- Syntax-highlighted SQL diffs and colorized comparison tables.
+
+### 2. Inspect the Live PostgreSQL Database
+```bash
+python main.py --inspect-pg
 ```
 Outputs discovered tables (`group_loans`, `individual_loans`, `outlets`, `staff`, etc.), column types, nullability, and row counts.
 
-### 2. Seed the Problem 1 Benchmark Test Dataset
+### 3. Seed the Problem 1 Benchmark Test Dataset
 ```bash
 python scripts/seed_test_data.py
 ```
-Creates `local_problem1.db` containing:
-- 100 January 2024 sign-ups (Cohort denominator).
-- 30 distinct January users returning in February (Cohort numerator).
-- 134 February activity events (repeat logins, testing grain mismatch).
-- Known mathematical ground truth: **30.0%**.
 
-### 3. Run the End-to-End Baseline vs. Improved Demo
+### 4. Run the Automated One-Shot Demonstration
 ```bash
-python scripts/run_demo.py
+python main.py --demo
 ```
 
-### 4. Run the Automated Test Suite
+### 5. Run the Automated Test Suite
 ```bash
 python -m pytest tests/ -v
 ```

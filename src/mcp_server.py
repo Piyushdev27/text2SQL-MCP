@@ -18,6 +18,7 @@ from mcp.server.mcpserver import MCPServer
 
 from src.config import Settings, get_settings
 from src.db import execute_readonly_query, get_local_db_connection
+from src.literal_resolver import LiteralResolver
 from src.schema_inspector import SchemaInspector
 from src.sql_validator import validate_readonly_sql
 
@@ -134,6 +135,17 @@ def execute_readonly_sql(
             "rows": [],
             "row_count": 0,
         }
+
+
+@server.tool(
+    name="resolve_categorical_literals",
+    description="Resolves natural language terms and abbreviations (e.g. 'casual leave', 'Tier 1') to exact database cell values (e.g. 'CL', 'T1').",
+)
+def resolve_categorical_literals(user_query: str, target: str = "postgres") -> List[Dict[str, Any]]:
+    """Grounds user mentions against actual database cell literals to prevent zero-row query collapse."""
+    resolver = LiteralResolver(target=target)
+    matches = resolver.resolve_literals(user_query)
+    return [m.model_dump() for m in matches]
 
 
 def run_standalone_server() -> None:

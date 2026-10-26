@@ -23,9 +23,20 @@ def test_mcp_tool_discovery(executor):
         "get_sample_rows",
         "validate_sql",
         "execute_readonly_sql",
+        "resolve_categorical_literals",
     ]
     for expected in expected_tools:
         assert expected in tool_names
+
+
+def test_mcp_resolve_categorical_literals(executor):
+    """Verifies resolve_categorical_literals MCP tool grounds natural language to database cell values."""
+    matches = executor.resolve_categorical_literals_sync(
+        "Show outlets in Telangana in Tier 1", target="postgres"
+    )
+    terms = {m["term"]: m["database_literal"] for m in matches}
+    assert terms.get("tier 1") == "T1"
+    assert terms.get("Telangana") == "Telangana"
 
 
 def test_mcp_list_tables(executor):
