@@ -24,6 +24,7 @@ from rich.text import Text
 
 from src.config import get_settings
 from src.evaluator import Problem1Evaluator
+from src.literal_resolver import LiteralResolver
 from src.query_executor import MCPQueryExecutor
 from src.schema_inspector import SchemaInspector
 from src.semantic_validator import validate_semantic_analysis
@@ -172,6 +173,20 @@ class InteractiveConsole:
                     data_table.add_row(*[str(r.get(c, "")) for c in cols])
                 console.print("\n")
                 console.print(data_table)
+            else:
+                console.print("\n[bold yellow]Query executed successfully via MCP, but returned 0 rows.[/bold yellow]")
+                state_filters = [m for m in grounded_literals if m.get("table_name") == "outlets" and m.get("column_name") == "state_name"]
+                if state_filters:
+                    searched_state = state_filters[0].get("database_literal")
+                    try:
+                        available_states = LiteralResolver(target=tgt).get_distinct_column_literals("outlets", "state_name")
+                        if searched_state not in available_states:
+                            console.print(
+                                f"[dim cyan]Note: '{searched_state}' does not have any branches/outlets in this database.\n"
+                                f"Available states are: {', '.join(sorted(available_states))}[/dim cyan]\n"
+                            )
+                    except Exception:
+                        pass
 
         # 7. Diagnosed Pitfalls Alert
         if val_base.errors or val_base.warnings:

@@ -48,3 +48,17 @@ def test_generate_grounding_prompt_hint(resolver):
 
     assert "[Discovered Database Literals (Schema Grounding)]:" in hint
     assert "attendance_code = 'CL'" in hint
+
+
+def test_resolve_fuzzy_state_typo_and_unindexed_state(resolver):
+    """Verifies typo tolerance ('Maharahtra' -> 'Maharashtra') and out-of-domain state handling."""
+    text = "Show all outlets located in Maharahtra in Tier 1"
+    matches = resolver.resolve_literals(text)
+
+    term_map = {m.term: m for m in matches}
+    assert "Maharahtra" in term_map
+    match = term_map["Maharahtra"]
+    assert match.database_literal == "Maharashtra"
+    assert "fuzzy" in match.match_type
+    assert match.table_name == "outlets"
+    assert match.column_name == "state_name"

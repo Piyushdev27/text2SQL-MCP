@@ -7,6 +7,7 @@ Solves the Entity Literal Mismatch problem where natural language mentions
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -49,6 +50,17 @@ COMMON_DOMAIN_SYNONYMS: Dict[str, Dict[str, str]] = {
         "enrollment": "Enrolment",
     },
 }
+
+# Standard geographical states for typo tolerance and out-of-domain entity recognition
+KNOWN_INDIAN_STATES = [
+    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
+    "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka",
+    "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram",
+    "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu",
+    "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal", "Delhi"
+]
+
+STOP_WORDS = {"in", "the", "located", "at", "for", "all", "show", "of", "and", "tier", "outlets", "outlet", "by"}
 
 # Targeted categorical columns for live inspection
 INDEXED_CATEGORICAL_COLUMNS = [
@@ -157,7 +169,62 @@ class LiteralResolver:
                             )
                         )
 
+        # Step 3: Geographical & Categorical Typo / Fuzzy Matching
+        matched_state_tuple = self._resolve_state_fuzzy(user_text)
+        if matched_state_tuple:
+            raw_term, matched_state, match_type = matched_state_tuple
+            key = ("outlets", "state_name", matched_state)
+            if key not in matched_keys:
+                matched_keys.add(key)
+                try:
+                    db_states = self.get_distinct_column_literals("outlets", "state_name")
+                    if matched_state not in db_states:
+                        match_type = f"{match_type} (not in DB)"
+                except Exception:
+                    pass
+
+                matches.append(
+                    LiteralMatch(
+                        term=raw_term,
+                        table_name="outlets",
+                        column_name="state_name",
+                        database_literal=matched_state,
+                        match_type=match_type,
+                        sql_predicate=f"state_name = '{matched_state}'",
+                    )
+                )
+
         return matches
+
+    def _resolve_state_fuzzy(self, user_text: str) -> Optional[Tuple[str, str, str]]:
+        """Resolves natural language states with typo-tolerance and geographical knowledge."""
+        text_lower = user_text.lower()
+
+        # 1. Check exact/case-insensitive match against known states
+        for s in KNOWN_INDIAN_STATES:
+            if re.search(r"\b" + re.escape(s.lower()) + r"\b", text_lower):
+                return s, s, "exact"
+
+        words = [w for w in re.findall(r"[a-zA-Z]+", user_text)]
+        multi_word_states = [s for s in KNOWN_INDIAN_STATES if " " in s]
+        single_word_states = [s for s in KNOWN_INDIAN_STATES if " " not in s]
+
+        # 2. Check single words against single-word states (e.g. Maharahtra -> Maharashtra)
+        for w in words:
+            if w.lower() in STOP_WORDS or len(w) < 4:
+                continue
+            close = difflib.get_close_matches(w, single_word_states, n=1, cutoff=0.74)
+            if close:
+                return w, close[0], "fuzzy"
+
+        # 3. Check bigrams against multi-word states (e.g. Utter Pradesh -> Uttar Pradesh)
+        bigrams = [" ".join(words[i : i + 2]) for i in range(len(words) - 1)]
+        for bg in bigrams:
+            close = difflib.get_close_matches(bg, multi_word_states, n=1, cutoff=0.80)
+            if close:
+                return bg, close[0], "fuzzy"
+
+        return None
 
     def generate_grounding_prompt_hint(self, user_text: str) -> str:
         """Produces a formatted prompt hint to guide LLMs with exact database literals."""
