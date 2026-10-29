@@ -82,6 +82,36 @@ class MCPQueryExecutor:
             raise MCPClientError(f"resolve_categorical_literals failed: {result.content}")
         return result.structured_content["result"]
 
+    async def prune_schema(self, user_query: str, target: str = "postgres", top_k_tables: int = 3) -> Dict[str, Any]:
+        """Calls MCP tool 'prune_schema'."""
+        result = await self.server.call_tool(
+            "prune_schema",
+            {"user_query": user_query, "target": target, "top_k_tables": top_k_tables},
+        )
+        if result.is_error:
+            raise MCPClientError(f"prune_schema failed: {result.content}")
+        return result.structured_content["result"]
+
+    async def find_join_path(self, source_table: str, target_table: str, target: str = "postgres") -> Dict[str, Any]:
+        """Calls MCP tool 'find_join_path'."""
+        result = await self.server.call_tool(
+            "find_join_path",
+            {"source_table": source_table, "target_table": target_table, "target": target},
+        )
+        if result.is_error:
+            raise MCPClientError(f"find_join_path failed: {result.content}")
+        return result.structured_content["result"]
+
+    async def get_schema_graph(self, target: str = "postgres") -> Dict[str, Any]:
+        """Calls MCP tool 'get_schema_graph'."""
+        result = await self.server.call_tool(
+            "get_schema_graph",
+            {"target": target},
+        )
+        if result.is_error:
+            raise MCPClientError(f"get_schema_graph failed: {result.content}")
+        return result.structured_content["result"]
+
     # Synchronous convenience wrappers for ease of use in scripts and tests
     def list_tables_sync(self, target: str = "postgres") -> List[str]:
         return asyncio.run(self.list_tables(target=target))
@@ -100,3 +130,12 @@ class MCPQueryExecutor:
 
     def resolve_categorical_literals_sync(self, user_query: str, target: str = "postgres") -> List[Dict[str, Any]]:
         return asyncio.run(self.resolve_categorical_literals(user_query=user_query, target=target))
+
+    def prune_schema_sync(self, user_query: str, target: str = "postgres", top_k_tables: int = 3) -> Dict[str, Any]:
+        return asyncio.run(self.prune_schema(user_query=user_query, target=target, top_k_tables=top_k_tables))
+
+    def find_join_path_sync(self, source_table: str, target_table: str, target: str = "postgres") -> Dict[str, Any]:
+        return asyncio.run(self.find_join_path(source_table=source_table, target_table=target_table, target=target))
+
+    def get_schema_graph_sync(self, target: str = "postgres") -> Dict[str, Any]:
+        return asyncio.run(self.get_schema_graph(target=target))

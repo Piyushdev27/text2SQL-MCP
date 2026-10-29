@@ -19,7 +19,9 @@ from mcp.server.mcpserver import MCPServer
 from src.config import Settings, get_settings
 from src.db import execute_readonly_query, get_local_db_connection
 from src.literal_resolver import LiteralResolver
+from src.schema_graph import SchemaGraph
 from src.schema_inspector import SchemaInspector
+from src.schema_pruner import SchemaPruner
 from src.sql_validator import validate_readonly_sql
 
 logger = logging.getLogger(__name__)
@@ -146,6 +148,44 @@ def resolve_categorical_literals(user_query: str, target: str = "postgres") -> L
     resolver = LiteralResolver(target=target)
     matches = resolver.resolve_literals(user_query)
     return [m.model_dump() for m in matches]
+
+
+@server.tool(
+    name="prune_schema",
+    description="Ranks and prunes tables and columns to only relevant candidates for a query, discovering join paths and minimizing tokens (Problem 2).",
+)
+def prune_schema(user_query: str, target: str = "postgres", top_k_tables: int = 3) -> Dict[str, Any]:
+    """Prunes enterprise schema down to minimal compact cards and active join paths."""
+    pruner = SchemaPruner(target=target)
+    report = pruner.prune(user_query=user_query, top_k_tables=top_k_tables)
+    return report.model_dump()
+
+
+@server.tool(
+    name="find_join_path",
+    description="Finds the shortest relational join path between two tables using foreign keys and logical relationships.",
+)
+def find_join_path(source_table: str, target_table: str, target: str = "postgres") -> Dict[str, Any]:
+    """Discovers join paths across tables using graph traversal."""
+    graph = SchemaGraph(target=target)
+    path = graph.find_shortest_join_path(source_table, target_table)
+    return {
+        "source_table": source_table,
+        "target_table": target_table,
+        "found_path": path is not None,
+        "path_length": len(path) if path is not None else 0,
+        "join_predicates": [p.join_predicate for p in path] if path else [],
+    }
+
+
+@server.tool(
+    name="get_schema_graph",
+    description="Retrieves the complete relational knowledge graph (all tables, descriptions, primary keys, and join edges).",
+)
+def get_schema_graph(target: str = "postgres") -> Dict[str, Any]:
+    """Returns full relational schema graph."""
+    graph = SchemaGraph(target=target)
+    return graph.get_full_graph_definition()
 
 
 def run_standalone_server() -> None:

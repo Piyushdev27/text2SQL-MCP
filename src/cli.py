@@ -67,11 +67,13 @@ class InteractiveConsole:
         menu.add_row("4", "Inspect Live PostgreSQL Database Schema & Tables", "Live PostgreSQL")
         menu.add_row("5", "SQL Security Sandbox (Test AST validation on custom SQL)", "Active Target")
         menu.add_row("6", f"Toggle Target Database (Current: {self.active_target.upper()})", "Switch Target")
+        menu.add_row("7", "Problem 2: Schema Linking & Pruner Sandbox (Coarse/Fine Pruning)", "Live PostgreSQL")
+        menu.add_row("8", "Problem 2: Relational Graph Join Path Discovery (BFS)", "Live PostgreSQL")
         menu.add_row("help", "Redisplay this menu", "-")
         menu.add_row("q", "Exit / Quit", "-")
 
         console.print(menu)
-        console.print("[dim]Tip: You can also type ANY custom SQL query (e.g. 'SELECT * FROM outlets LIMIT 3;') directly![/dim]\n")
+        console.print("[dim]Tip: You can also type ANY natural language question or custom SQL query directly![/dim]\n")
 
     def run_problem1_analysis(self, question: str, target: Optional[str] = None) -> None:
         """Runs the complete Problem 1 Baseline vs Improved analysis and displays Rich comparison."""
@@ -105,6 +107,24 @@ class InteractiveConsole:
                 lit_table.add_row(m["term"], f"{m['table_name']}.{m['column_name']}", f"'{m['database_literal']}'", m["match_type"])
             console.print("\n")
             console.print(lit_table)
+
+        # 1c. Schema Linking & Pruning (Problem 2 via MCP)
+        try:
+            prune_res = self.executor.prune_schema_sync(question, target=tgt)
+            if prune_res and prune_res.get("candidate_tables"):
+                cand_tables = ", ".join(prune_res["candidate_tables"])
+                reduction = prune_res.get("token_reduction_pct", 0.0)
+                join_paths = prune_res.get("discovered_join_paths", [])
+                prune_summary = (
+                    f"[bold green]Candidate Tables:[/bold green] {cand_tables}\n"
+                    f"[bold cyan]Token Reduction:[/bold cyan] [bold]{reduction:.1f}%[/bold] "
+                    f"({prune_res.get('pruned_total_columns', 0)} of {prune_res.get('original_total_columns', 0)} columns kept)\n"
+                )
+                if join_paths:
+                    prune_summary += f"[bold yellow]Discovered Join Keys:[/bold yellow] {', '.join(join_paths)}"
+                console.print(Panel(prune_summary, title="Problem 2: Schema Linking & Context Pruner (via MCP)", border_style="cyan"))
+        except Exception:
+            pass
 
         # 2. Generate Naive and Improved SQL
         gen_base = self.generator.generate_baseline_sql(question, target=tgt)
@@ -274,6 +294,108 @@ class InteractiveConsole:
         console.print(table)
         console.print("[dim]Use command 5 to query any table with SELECT.[/dim]\n")
 
+    def inspect_schema_pruning(self, question: Optional[str] = None) -> None:
+        """Runs Problem 2 Coarse Table & Fine Column Pruning and displays token savings."""
+        if not question:
+            console.print("\n[bold cyan]Problem 2 Schema Linking & Context Pruner Sandbox[/bold cyan]")
+            console.print("[dim]Choose a preset question or type your own:[/dim]")
+            console.print("  [yellow]a)[/yellow] Show staff attendance for casual leave in June by cluster")
+            console.print("  [yellow]b)[/yellow] What is the rejection rate for individual loans by product?")
+            console.print("  [yellow]c)[/yellow] Compare branch outlet targets against overdue daily balances")
+            choice = Prompt.ask("Enter question (or preset a/b/c)").strip()
+            if choice.lower() == "a":
+                question = "Show staff attendance for casual leave in June by cluster"
+            elif choice.lower() == "b":
+                question = "What is the rejection rate for individual loans by product?"
+            elif choice.lower() == "c":
+                question = "Compare branch outlet targets against overdue daily balances"
+            elif choice:
+                question = choice
+            else:
+                question = "Show staff attendance for casual leave in June by cluster"
+
+        console.print(f"\n[bold cyan]=== Problem 2: Schema Linking & Context Pruner ===[/bold cyan]")
+        console.print(f"[bold italic white]\"{question}\"[/bold italic white]\n")
+
+        res = self.executor.prune_schema_sync(question, target=self.active_target)
+        table_scores = res.get("table_scores", [])
+        discovered_paths = res.get("discovered_join_paths", [])
+        reduction_pct = res.get("token_reduction_pct", 0.0)
+        orig_cols = res.get("original_total_columns", 0)
+        pruned_cols = res.get("pruned_total_columns", 0)
+
+        # 1. Coarse Table Pruning Ranking Table
+        table_rank = Table(title="1. Coarse Table Pruning & Relevance Ranking", border_style="cyan")
+        table_rank.add_column("Table Name", style="bold")
+        table_rank.add_column("Relevance Score", justify="right")
+        table_rank.add_column("Status", justify="center")
+        table_rank.add_column("Relevance Rationale / Grounding Reason", style="dim")
+
+        for ts in table_scores:
+            status_text = "[bold green]SELECTED[/bold green]" if ts["is_selected"] else "[dim red]PRUNED[/dim red]"
+            score_style = "bold green" if ts["is_selected"] else "dim"
+            reasons = "; ".join(ts["relevance_reasons"]) if ts["relevance_reasons"] else "No query/literal overlap"
+            table_rank.add_row(ts["table_name"], f"[{score_style}]{ts['score']:.1f}[/{score_style}]", status_text, reasons)
+
+        console.print(table_rank)
+
+        # 2. Join Path Continuity
+        if discovered_paths:
+            path_panel = "\n".join([f"  • [bold yellow]{p}[/bold yellow]" for p in discovered_paths])
+            console.print(Panel(f"[bold green]Discovered Join Keys (Preserving Relational Continuity):[/bold green]\n{path_panel}", border_style="yellow"))
+
+        # 3. Fine Column Pruning & Token Savings Metric
+        pruned_schemas = res.get("pruned_schemas", {})
+        col_table = Table(title=f"2. Fine Column Pruning (Context Bloat Reduction: {reduction_pct:.1f}%)", border_style="green")
+        col_table.add_column("Candidate Table", style="bold yellow")
+        col_table.add_column("Original", justify="center")
+        col_table.add_column("Retained", justify="center", style="bold green")
+        col_table.add_column("Dropped", justify="center", style="dim red")
+        col_table.add_column("Selected Essential Columns (PK / FK / Metrics)", style="white")
+
+        for tbl, ps in pruned_schemas.items():
+            kept_names = [f"[bold]{c['name']}[/bold]" if c.get("is_primary_key") or c.get("is_pk") else c["name"] for c in ps["selected_columns"]]
+            col_table.add_row(
+                tbl,
+                str(ps["original_column_count"]),
+                str(ps["pruned_column_count"]),
+                str(len(ps["dropped_columns"])),
+                ", ".join(kept_names),
+            )
+
+        console.print(col_table)
+
+        # 4. Compact Schema Card Output
+        card = res.get("compact_schema_markdown", "")
+        if card:
+            console.print(Panel(card, title="3. Generated Compact Markdown Schema Card for LLM Context", border_style="bright_blue"))
+
+        console.print(f"[bold cyan]Result:[/bold cyan] Reduced schema context from [red]{orig_cols}[/red] to [bold green]{pruned_cols}[/bold green] columns ([bold]{reduction_pct:.1f}% token reduction[/bold]), eliminating hallucinations and context bloat.\n")
+
+    def inspect_join_paths(self) -> None:
+        """Explores shortest join paths between two tables using graph BFS."""
+        console.print("\n[bold cyan]Problem 2 Relational Knowledge Graph Join Discovery[/bold cyan]")
+        tables = SchemaInspector(target=self.active_target).get_table_names()
+        console.print(f"[dim]Available tables: {', '.join(tables)}[/dim]")
+
+        t1 = Prompt.ask("Enter source table (e.g. staff_attendance)").strip().lower()
+        t2 = Prompt.ask("Enter target table (e.g. outlets)").strip().lower()
+
+        if not t1 or not t2:
+            return
+
+        res = self.executor.find_join_path_sync(t1, t2, target=self.active_target)
+        if res.get("found_path"):
+            path_len = res.get("path_length")
+            predicates = res.get("join_predicates", [])
+            steps_desc = "\n".join([f"  {idx+1}. [bold yellow]{pred}[/bold yellow]" for idx, pred in enumerate(predicates)])
+            console.print(Panel(
+                f"[bold green]Shortest Join Path Found ({path_len} hop{'s' if path_len > 1 else ''}):[/bold green]\n{steps_desc}",
+                border_style="green",
+            ))
+        else:
+            console.print(Panel(f"[bold red]No relational join path found between '{t1}' and '{t2}'.[/bold red]", border_style="red"))
+
     def start_loop(self) -> None:
         """Main REPL loop."""
         self.print_banner()
@@ -325,6 +447,12 @@ class InteractiveConsole:
                     # Toggle database target
                     self.active_target = "local" if self.active_target == "postgres" else "postgres"
                     console.print(f"[bold yellow]Switched target database to:[/bold yellow] [bold green]{self.active_target.upper()}[/bold green]\n")
+
+                elif cmd == "7":
+                    self.inspect_schema_pruning()
+
+                elif cmd == "8":
+                    self.inspect_join_paths()
 
                 elif user_input.upper().startswith("SELECT ") or user_input.upper().startswith("WITH "):
                     # User typed or pasted a multi-line SQL query directly

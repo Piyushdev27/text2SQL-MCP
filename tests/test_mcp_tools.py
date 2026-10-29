@@ -24,6 +24,9 @@ def test_mcp_tool_discovery(executor):
         "validate_sql",
         "execute_readonly_sql",
         "resolve_categorical_literals",
+        "prune_schema",
+        "find_join_path",
+        "get_schema_graph",
     ]
     for expected in expected_tools:
         assert expected in tool_names

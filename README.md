@@ -1,23 +1,31 @@
-# Text-to-SQL Problem 1: Erroneous Data Analysis Using MCP and PostgreSQL
+# Enterprise Text-to-SQL: Erroneous Analysis & Schema Linking using MCP and PostgreSQL
 
-An enterprise-grade Text-to-SQL system built from scratch using the **Model Context Protocol (MCP)** and **PostgreSQL**, dedicated exclusively to solving **Problem 1: Erroneous Data Analysis**.
-
----
-
-## 1. Problem 1 Overview: Erroneous Data Analysis
-
-In the Spider 2.0 benchmark, **35.5% of real-world text-to-SQL failures** stem from *Erroneous Data Analysis*.
-
-### Core Concept: Execution Success != Semantic Correctness
-A query can be syntactically valid in PostgreSQL and execute with zero errors (`HTTP 200 / Status SUCCESS`), yet produce a completely incorrect business answer due to:
-1. **Grain & Counting Mismatches**: Counting row/event occurrences (`COUNT(*)`, `COUNT(event_id)`) instead of distinct entities (`COUNT(DISTINCT user_id)`).
-2. **Filter Misplacement**: Placing date predicates on a `LEFT JOIN` in the `WHERE` clause, inadvertently turning it into an `INNER JOIN` and dropping the churned cohort.
-3. **Denominator Distortion**: Dividing returning users by active users or activity events instead of the baseline signup cohort.
-4. **Division-by-Zero Crashes**: Dividing without guarding the denominator with `NULLIF(col, 0)`.
+An enterprise-grade Text-to-SQL system built from scratch using the **Model Context Protocol (MCP)**, **PostgreSQL**, and **AST-based Semantic Verification**, solving:
+1. **Problem 1: Erroneous Data Analysis** (Grain mismatch, filter leaks, denominator distortion, Cartesian explosion).
+2. **Problem 2: Schema Linking & Large-Scale Schema Pruning** (Coarse table pruning, fine column pruning, relational graph BFS join discovery, token reduction).
 
 ---
 
-## 2. Architecture
+## 1. Core Problems Solved
+
+### Problem 1: Erroneous Data Analysis (35.5% of Spider 2.0 Failures)
+A query can execute with zero SQL errors (`HTTP 200 / Status SUCCESS`), yet produce completely wrong business metrics:
+- **Grain & Counting Mismatches**: Counting row occurrences (`COUNT(*)`, `COUNT(event_id)`) instead of distinct entities (`COUNT(DISTINCT user_id)`).
+- **Filter Misplacement**: Placing date predicates on a `LEFT JOIN` in the `WHERE` clause, inadvertently turning it into an `INNER JOIN` and dropping the churned cohort.
+- **Denominator Distortion**: Dividing returning users by active users or activity events instead of the baseline signup cohort.
+- **Cartesian Fan-Out Explosion**: Joining multi-table aggregates without CTE pre-aggregation, blowing up monthly financial totals.
+- **Division-by-Zero Crashes**: Dividing without guarding denominators using `NULLIF(col, 0)`.
+
+### Problem 2: Schema Linking & Large-Scale Schema Pruning
+In enterprise data warehouses, massive table counts and hundreds of audit columns cause context bloat, column hallucinations, and invalid joins:
+- **Coarse Table Pruning**: Dynamic relevance scoring prioritizing grounded literals, domain tags, query stems, and bridging tables.
+- **Fine Column Pruning**: Stripping irrelevant audit/timestamp columns while preserving Primary Keys, Foreign Keys, query metrics, and literal targets (e.g. **88% column reduction** on loan tables).
+- **Relational Graph BFS Join Discovery**: Traverses logical knowledge graphs to discover multi-hop join paths (e.g. `staff_attendance` $\to$ `staff` $\to$ `outlets`) even when CDC mirrors omit physical FK constraints.
+- **Fuzzy Literal Grounding**: Matches user typos ("Maharahtra" $\to$ "Maharashtra", "Tier 1" $\to$ "T1") against live column values.
+
+---
+
+## 2. Architecture & Official MCP Tools
 
 ```
 User Question ("What % of Jan signups returned in Feb?")
@@ -26,20 +34,23 @@ User Question ("What % of Jan signups returned in Feb?")
 ┌────────────────────────┐
 │    SQL Generator       │  Decomposes question into AnalyticalContract
 └────────┬───────────────┘
-         │  Requests schema cards & sample rows via JSON-RPC
+         │  Requests schema discovery & literal grounding via JSON-RPC
          ▼
 ┌────────────────────────┐
 │   MCP Query Executor   │  Official Python MCP Client layer
 └────────┬───────────────┘
          │
          ▼
-┌────────────────────────┐
-│       MCP Server       │  Exposes 5 safe tools:
-│   (MCPServer v2.3)     │  1. list_tables
-└────────┬───────────────┘  2. get_table_schema
-         │                  3. get_sample_rows
+┌────────────────────────┐  Exposes 9 official MCP tools:
+│       MCP Server       │  1. list_tables
+│   (MCPServer v2.3)     │  2. get_table_schema
+└────────┬───────────────┘  3. get_sample_rows
          │                  4. validate_sql (AST inspection)
          │                  5. execute_readonly_sql (timeout + row limits)
+         │                  6. resolve_categorical_literals (fuzzy grounding)
+         │                  7. prune_schema (coarse + fine context reduction)
+         │                  8. find_join_path (graph BFS shortest path)
+         │                  9. get_schema_graph (relational graph export)
          ▼
 ┌────────────────────────┐
 │  PostgreSQL / Local DB │  Enforces read-only transactions & 60s statement timeout
@@ -152,7 +163,7 @@ python main.py --demo
 ```bash
 python -m pytest tests/ -v
 ```
-Runs 25 automated tests verifying connectivity, MCP tools, SQL AST security, and semantic analysis accuracy.
+Runs 37 automated tests verifying live PostgreSQL connectivity, all 9 MCP tools, AST security, semantic analysis accuracy, and Problem 2 Schema Linking & Pruning (BFS graph traversal, table scoring, fine column filtering, token reduction).
 
 ---
 
