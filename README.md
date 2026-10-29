@@ -73,16 +73,22 @@ Verified Business Answer (30.0% Retention Rate)
 ```
 text_to_sql/
 ├── src/
-│   ├── __init__.py            # Package root (version 0.1.0)
+│   ├── __init__.py            # Package root exposing LangChain tools and prompts (v0.2.0)
 │   ├── config.py              # Pydantic Settings with masked credentials and .env loading
 │   ├── db.py                  # PostgreSQL connection factory with 60s timeout & read-only session
 │   ├── schema_inspector.py    # Generates LLM schema cards and fetches bounded sample rows
+│   ├── schema_graph.py        # Problem 2 Relational Knowledge Graph & BFS shortest join paths
+│   ├── schema_pruner.py       # Problem 2 Coarse Table & Fine Column Pruner (Token Reduction)
+│   ├── literal_resolver.py    # Fuzzy literal grounding and database typo matching
 │   ├── sql_validator.py       # SQLGlot AST validator rejecting DDL, DML, and multi-statements
-│   ├── mcp_server.py          # Official Anthropic MCP Server with 5 database tools
+│   ├── mcp_server.py          # Official Anthropic MCP Server with 9 database tools
 │   ├── query_executor.py      # MCP Client layer wrapping tool discovery and invocation
+│   ├── langchain_tools.py     # Native LangChain BaseTool adapters with sync/async support
+│   ├── langchain_prompts.py   # ChatPromptTemplate and SQLPlan Pydantic model for structured output
 │   ├── semantic_validator.py  # Diagnoses business logic pitfalls (grain, join traps, bounds)
 │   ├── sql_generator.py       # Generates baseline (naive) and improved (guarded) SQL
-│   └── evaluator.py           # Calculates dynamic ground truth and compares pipeline accuracy
+│   ├── evaluator.py           # Calculates dynamic ground truth and compares pipeline accuracy
+│   └── cli.py                 # Interactive Rich terminal REPL with Problem 1 & 2 sandboxes
 ├── scripts/
 │   ├── inspect_database.py    # CLI tool to inspect tables and columns in PostgreSQL
 │   ├── seed_test_data.py      # Populates the 120-user January/February retention benchmark
@@ -90,12 +96,15 @@ text_to_sql/
 ├── tests/
 │   ├── __init__.py
 │   ├── test_db_connection.py  # Tests live PostgreSQL connectivity and session settings
-│   ├── test_mcp_tools.py      # Tests discovery and execution of all 5 MCP tools
+│   ├── test_literal_resolver.py # Tests fuzzy matching and typo resolution
+│   ├── test_mcp_tools.py      # Tests discovery and execution of all 9 MCP tools
+│   ├── test_schema_pruner.py  # Tests BFS join paths, table scoring, and column pruning
+│   ├── test_langchain_tools.py # Tests LangChain BaseTool wrappers, LCEL prompts, and SQLPlan
 │   ├── test_sql_validator.py  # Tests AST rejection of DROP, DELETE, UPDATE, and multi-statements
 │   └── test_semantic_analysis.py # Tests retention accuracy, grain handling, and join leak detection
 ├── .env.example               # Sanitized template with configuration placeholders
 ├── .gitignore                 # Excludes .env, __pycache__, local databases, and logs
-├── requirements.txt           # Minimal dependencies (mcp, psycopg2-binary, sqlglot, pydantic, pytest)
+├── requirements.txt           # Core dependencies (mcp, psycopg2-binary, sqlglot, pydantic, langchain, pytest)
 └── README.md                  # Project documentation and architectural guide
 ```
 
@@ -163,7 +172,7 @@ python main.py --demo
 ```bash
 python -m pytest tests/ -v
 ```
-Runs 37 automated tests verifying live PostgreSQL connectivity, all 9 MCP tools, AST security, semantic analysis accuracy, and Problem 2 Schema Linking & Pruning (BFS graph traversal, table scoring, fine column filtering, token reduction).
+Runs 42 automated tests verifying live PostgreSQL connectivity, all 9 MCP tools, LangChain BaseTool adapters, AST security, semantic analysis accuracy, and Problem 2 Schema Linking & Pruning.
 
 ---
 

@@ -12,5 +12,9 @@ python-dotenv>=1.0.0
 # SQL AST Parsing & Dialect Validation
 sqlglot>=26.0.0
 
+# LangChain Core Integration (Agent Tools & Prompts)
+langchain>=0.3.0
+langchain-core>=0.3.0
+
 # Automated Testing
 pytest>=8.0.0
